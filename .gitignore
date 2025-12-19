@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.DS_Store
+
+# Local env files (keep example tracked)
+.env
+.env.*
+!.env.example
+.env.local
+
+# Claude SDK local state
+.claude/
+.claude-data/
+claude-data/
+
+# Bun artifacts
+bun.lockb

@@ -1,0 +1,8 @@
+services:
+  cc-agent-sdk:
+    image: cc-agent-sdk:test
+    container_name: cc-agent-sdk
+    ports:
+      - "20001:20001"
+    volumes:
+      - ./claude-data:/home/bun/.claude

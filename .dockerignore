@@ -1,0 +1,10 @@
+.git
+.DS_Store
+node_modules
+.env
+.env.*
+.dev.vars
+.claude
+.claude-data
+tmp
+coverage
