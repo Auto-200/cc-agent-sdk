@@ -1,103 +1,7 @@
-// Minimal local Claude Agent SDK proxy server, now as a TypeScript module.
-// Usage: npm run dev (watch) or npm run start (built output)
-// - Listens on AGENT_SDK_PORT (default 20001)
-// - Endpoint: POST /agent-sdk/stream
-//   Body: { conversationId?, messageId?, userMessage?, history?, systemPrompt?, model?, baseURL?, apiKey?, prompt?, options? }
-// - Response: SSE stream (raw Claude Agent SDK events)
-
-import { query } from "@anthropic-ai/claude-agent-sdk";
-import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
-
-function sanitizeBaseURL(url?: string): string | undefined {
-  if (!url) return undefined;
-  return url.replace(/\/v1\/messages\/?$/, "").replace(/\/v1\/?$/, "").replace(/\/$/, "");
-}
-
-type Role = "user" | "assistant";
-
-interface HistoryMessage {
-  role: Role;
-  content: string;
-}
-
-interface RequestOptions {
-  allowedTools?: string[];
-  settingSources?: string[];
-  cwd?: string;
-  permissionMode?: string;
-  includePartialMessages?: boolean;
-  disallowedTools?: string[];
-  allowDangerouslySkipPermissions?: boolean;
-  env?: Record<string, string>;
-  extraArgs?: Record<string, string | null>;
-  persistSession?: boolean;
-  resume?: string;
-  forkSession?: boolean;
-  model?: string;
-  tools?: string[] | { type: "preset"; preset: "claude_code" };
-  systemPrompt?: string | { type: "preset"; preset: "claude_code"; append?: string };
-  mcpServers?: Record<string, McpServerConfig>;
-  resumeSessionAt?: string;
-  betas?: string[];
-}
-
-interface RequestBody {
-  prompt?: string;
-  userMessage?: string;
-  history?: HistoryMessage[];
-  systemPrompt?: string;
-  model?: string;
-  baseURL?: string;
-  apiKey?: string;
-  conversationId?: string;
-  options?: RequestOptions;
-}
-
-type SettingSource = "user" | "project" | "local";
-type PermissionMode = "default" | "acceptEdits" | "bypassPermissions" | "plan" | "dontAsk";
-type BetaFlag = "context-1m-2025-08-07";
-
-const DEFAULT_SETTING_SOURCES: SettingSource[] = ["user", "project"];
-const ALLOWED_BETAS: BetaFlag[] = ["context-1m-2025-08-07"];
-
-function normalizeSettingSources(input: unknown): SettingSource[] | undefined {
-  if (!Array.isArray(input)) return undefined;
-  const valid = input.filter(
-    (value): value is SettingSource =>
-      value === "user" || value === "project" || value === "local"
-  );
-  return valid.length > 0 ? valid : undefined;
-}
-
-function normalizePermissionMode(input: unknown): PermissionMode | undefined {
-  if (input === "default" || input === "acceptEdits" || input === "bypassPermissions" || input === "plan" || input === "dontAsk") {
-    return input;
-  }
-  return undefined;
-}
-
-function normalizeBetas(input: unknown): BetaFlag[] | undefined {
-  if (!Array.isArray(input)) return undefined;
-  const valid = input.filter((beta): beta is BetaFlag => ALLOWED_BETAS.includes(beta as BetaFlag));
-  return valid.length > 0 ? valid : undefined;
-}
-
-function normalizeMcpServers(input: unknown): Record<string, McpServerConfig> | undefined {
-  if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
-  const entries = Object.entries(input);
-  const servers: Record<string, McpServerConfig> = {};
-  for (const [key, value] of entries) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
-    const { command, args, env } = value as { command?: unknown; args?: unknown; env?: unknown };
-    if (typeof command !== "string") continue;
-    servers[key] = {
-      command,
-      ...(Array.isArray(args) ? { args } : {}),
-      ...(env && typeof env === "object" && !Array.isArray(env) ? { env: env as Record<string, string> } : {}),
-    };
-  }
-  return Object.keys(servers).length > 0 ? servers : undefined;
-}
+import { query , type Options }  from "@anthropic-ai/claude-agent-sdk";
+import { DEFAULT_SETTING_SOURCES, json, normalizeMcpServers, normalizeSettingSources, parseBooleanParam, parseNumberParam, sanitizeBaseURL } from "./server-helpers";
+import { listAllConversations, listProjects, readConversationHistory } from "./history";
+import { RequestBody } from "./types";
 
 const PORT = Number(process.env.AGENT_SDK_PORT || 20001);
 // Optional: protect the endpoint with a bearer token
@@ -106,29 +10,26 @@ const AGENT_SDK_API_KEY = process.env.AGENT_SDK_API_KEY || "";
 const API_KEY = process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN;
 const BASE_URL = sanitizeBaseURL(process.env.ANTHROPIC_BASE_URL || process.env.ANTHROPIC_API_BASE_URL);
 const DEFAULT_MODEL = process.env.ANTHROPIC_MODEL || process.env.ANTHROPIC_DEFAULT_SONNET_MODEL || "claude-3-5-sonnet-20241022";
-const DEFAULT_SYSTEM_PROMPT =
-  (process.env.ANTHROPIC_SYSTEM_PROMPT || "").trim() ||
-  "You are a capable assistant agent. Be concise, accurate, and action-focused.";
+const DEFAULT_SYSTEM_PROMPT = (process.env.ANTHROPIC_SYSTEM_PROMPT || "").trim() || undefined;
 const EXECUTABLE = "bun";
-
-function buildPrompt({
-  history = [],
-  userMessage,
-}: {
-  history?: HistoryMessage[];
-  userMessage?: string;
-}): string {
-  const histText = history
-    .map((m) => `${m.role === "assistant" ? "助手" : "用户"}: ${m.content}`)
-    .join("\n");
-  return `${histText ? `${histText}\n` : ""}用户: ${userMessage}`;
-}
+const HOME_DIR = process.env.HOME || process.env.USERPROFILE || "";
+const CLAUDE_DATA_DIR =
+  process.env.CLAUDE_DATA_DIR ||
+  process.env.AGENT_SDK_CLAUDE_DATA_DIR ||
+  (HOME_DIR ? `${HOME_DIR}/.claude` : ".claude");
 
 async function handleRequest(req: Request): Promise<Response> {
   const url = new URL(req.url);
-  if (req.method !== "POST" || url.pathname !== "/agent-sdk/stream") {
+  const isStream = url.pathname === "/agent-sdk/stream";
+  const isHistory = url.pathname === "/agent-sdk/history";
+  const isProjects = url.pathname === "/agent-sdk/projects";
+  const isConversations = url.pathname === "/agent-sdk/conversations";
+
+  if (!(isStream || isHistory || isProjects || isConversations)) {
     return new Response("Not found", { status: 404 });
   }
+  if (isStream && req.method !== "POST") return new Response("Method not allowed", { status: 405 });
+  if (!isStream && req.method !== "GET") return new Response("Method not allowed", { status: 405 });
 
   if (AGENT_SDK_API_KEY) {
     const auth = req.headers.get("authorization") || "";
@@ -136,6 +37,41 @@ async function handleRequest(req: Request): Promise<Response> {
     if (auth !== expected) {
       return new Response("Unauthorized", { status: 401 });
     }
+  }
+
+  if (!isStream) {
+    if (isProjects) {
+      const projects = await listProjects({ claudeDataDir: CLAUDE_DATA_DIR });
+      if (!projects) return json({ error: "Claude data dir not found", claudeDataDir: CLAUDE_DATA_DIR }, { status: 404 });
+      return json({ claudeDataDir: CLAUDE_DATA_DIR, projects });
+    }
+
+    if (isConversations) {
+      const limit = parseNumberParam(url.searchParams.get("limit")) ?? 100;
+      const items = await listAllConversations({ claudeDataDir: CLAUDE_DATA_DIR, limit });
+      if (!items) return json({ error: "Claude data dir not found", claudeDataDir: CLAUDE_DATA_DIR }, { status: 404 });
+      return json({ claudeDataDir: CLAUDE_DATA_DIR, conversations: items });
+    }
+
+    const conversationId = url.searchParams.get("conversationId") || "";
+    const offset = parseNumberParam(url.searchParams.get("offset")) ?? 0;
+    const limit = parseNumberParam(url.searchParams.get("limit")) ?? 200;
+    const includeThinking = parseBooleanParam(url.searchParams.get("includeThinking")) ?? false;
+
+    const result = await readConversationHistory({
+      claudeDataDir: CLAUDE_DATA_DIR,
+      conversationId,
+      offset,
+      limit,
+      includeThinking,
+    });
+    if (!result) {
+      return json(
+        { error: "Conversation not found", claudeDataDir: CLAUDE_DATA_DIR, conversationId },
+        { status: 404 }
+      );
+    }
+    return json({ claudeDataDir: CLAUDE_DATA_DIR, ...result });
   }
 
   let body: RequestBody = {};
@@ -151,7 +87,6 @@ async function handleRequest(req: Request): Promise<Response> {
     prompt: bodyPrompt,
     userMessage,
     systemPrompt,
-    history = [],
     model,
     baseURL,
     apiKey: bodyApiKey,
@@ -168,13 +103,12 @@ async function handleRequest(req: Request): Promise<Response> {
       : ["Skill"];
   const settingSources = normalizeSettingSources(bodyOptions.settingSources) ?? DEFAULT_SETTING_SOURCES;
   const cwd = typeof bodyOptions.cwd === "string" ? bodyOptions.cwd : undefined;
-  const permissionMode = normalizePermissionMode(bodyOptions.permissionMode) ?? "default";
+  const permissionMode = "bypassPermissions";
   const includePartialMessages = bodyOptions.includePartialMessages !== false; // default true
   const extraArgs =
     bodyOptions.extraArgs && typeof bodyOptions.extraArgs === "object" && !Array.isArray(bodyOptions.extraArgs)
       ? bodyOptions.extraArgs
       : undefined;
-  const betas = normalizeBetas(bodyOptions.betas);
   const mcpServers = normalizeMcpServers(bodyOptions.mcpServers);
 
   console.log("Request received", {
@@ -183,6 +117,7 @@ async function handleRequest(req: Request): Promise<Response> {
     hasApiKey: Boolean(bodyApiKey || API_KEY),
     baseURL: effectiveBaseURL,
     model: effectiveModel,
+    resume: bodyOptions.resume || conversationId || undefined
   });
 
   if (!userMessage && typeof bodyPrompt !== "string") {
@@ -236,41 +171,45 @@ async function handleRequest(req: Request): Promise<Response> {
       req.signal.addEventListener("abort", onAbort, { once: true });
 
       const systemPromptOption = bodyOptions.systemPrompt ?? systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
-      const prompt =
-        typeof bodyPrompt === "string"
-          ? bodyPrompt
-          : buildPrompt({ history, userMessage });
+      // We rely on `resume` for conversation history; each request should send only the current user message.
+      // If callers want full control, they can pass a raw `prompt` string.
+      const prompt = typeof bodyPrompt === "string" ? bodyPrompt : userMessage!;
       const queryStream = query({
         prompt,
         options: {
-          abortController,
-          model: effectiveModel,
-          executable: EXECUTABLE,
-          includePartialMessages,
-          settingSources,
-          allowedTools,
-          disallowedTools: bodyOptions.disallowedTools || ["Bash", "BashOutput", "KillBash"],
-          permissionMode,
-          allowDangerouslySkipPermissions: bodyOptions.allowDangerouslySkipPermissions || false,
+          abortController, // 用于在 HTTP 连接断开/超时后中止本次调用
+          model: effectiveModel, // 模型名（请求体 model/options.model 或环境默认）
+          executable: EXECUTABLE, // 运行 Claude Code 的可执行文件（本项目用 bun）
+          includePartialMessages, // 是否输出 partial stream events（本代理默认 true）
+          settingSources, // Claude Code 读取配置的来源（默认 ["user","project"]；可选 user/project/local）
+          allowedTools, // 允许的工具列表（默认 ["Skill"]）
+          disallowedTools: bodyOptions.disallowedTools || ["Bash", "BashOutput", "KillBash"], // 显式禁用高风险工具
+          permissionMode, // 权限模式：本代理固定 bypassPermissions（非交互）
+          allowDangerouslySkipPermissions: true, // 强制跳过交互式权限确认，避免卡住
           env: {
             ...process.env,
-            ANTHROPIC_API_KEY: effectiveApiKey,
+            ANTHROPIC_API_KEY: effectiveApiKey, // 上游密钥（请求体 apiKey 优先，否则走环境变量）
             ...(effectiveBaseURL
-              ? { ANTHROPIC_BASE_URL: effectiveBaseURL, ANTHROPIC_API_BASE_URL: effectiveBaseURL }
+              ? {
+                  // Anthropic 兼容 Base URL（去掉 /v1 /v1/messages 尾巴后的结果）
+                  ANTHROPIC_BASE_URL: effectiveBaseURL,
+                  ANTHROPIC_API_BASE_URL: effectiveBaseURL,
+                }
               : {}),
-            ...(bodyOptions.env && typeof bodyOptions.env === "object" ? bodyOptions.env : {}),
+            ...(bodyOptions.env && typeof bodyOptions.env === "object"
+              ? (bodyOptions.env as Record<string, string>)
+              : {}), // 透传额外环境变量（用于 MCP/自定义配置）
           },
-          ...(cwd ? { cwd } : {}),
-          ...(extraArgs ? { extraArgs } : {}),
-          persistSession: bodyOptions.persistSession ?? true,
-          ...(conversationId ? { resume: conversationId } : {}),
-          ...(bodyOptions.resume ? { resume: bodyOptions.resume } : {}),
-          ...(bodyOptions.resumeSessionAt ? { resumeSessionAt: bodyOptions.resumeSessionAt } : {}),
-          ...(bodyOptions.forkSession !== undefined ? { forkSession: bodyOptions.forkSession } : {}),
-          ...(bodyOptions.tools ? { tools: bodyOptions.tools } : {}),
-          ...(systemPromptOption !== undefined ? { systemPrompt: systemPromptOption } : {}),
-          ...(mcpServers ? { mcpServers } : {}),
-          ...(betas ? { betas } : {}),
+          ...(cwd ? { cwd } : {}), // Claude Code 的工作目录（可选）
+          ...(extraArgs ? { extraArgs } : {}), // 传给 Claude Code CLI 的额外参数（可选）
+          persistSession: true, // 固定持久化会话到 ~/.claude（用于 resume）
+          ...(conversationId ? { resume: conversationId } : {}), // 使用 conversationId 续聊（主要入口）
+          ...(bodyOptions.resume ? { resume: bodyOptions.resume } : {}), // 兼容：直接传 options.resume
+          ...(bodyOptions.resumeSessionAt ? { resumeSessionAt: bodyOptions.resumeSessionAt } : {}), // 从指定 checkpoint 恢复（可选）
+          ...(bodyOptions.forkSession !== undefined ? { forkSession: bodyOptions.forkSession } : {}), // 是否在恢复时分叉新会话（可选）
+          ...(bodyOptions.tools ? { tools: bodyOptions.tools } : {}), // 工具 preset/配置（可选）
+          ...(systemPromptOption !== undefined ? { systemPrompt: systemPromptOption } : {}), // 系统提示词（可选；不传则不下发给 SDK）
+          ...(mcpServers ? { mcpServers } : {}), // MCP servers 配置（可选）
         },
       });
 
