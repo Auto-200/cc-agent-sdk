@@ -79,8 +79,8 @@ docker compose down
 - `AGENT_SDK_API_KEY`：用于保护代理入口的 Bearer Token（可选）
 - `AGENT_SDK_IDLE_TIMEOUT_MS`：SSE 流空闲超时（默认 `180000`），上游较慢时可调大
 - `AGENT_SDK_FIRST_OUTPUT_TIMEOUT_MS`：收到 `system.init` 后等待首个输出事件的超时（默认 `180000`）
-- `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN`：默认使用的 Anthropic Key（可被请求体覆盖）
-- `ANTHROPIC_BASE_URL` / `ANTHROPIC_API_BASE_URL`：默认的 Anthropic 兼容 Base URL（可被请求体覆盖）
+- `ANTHROPIC_AUTH_TOKEN`：默认使用的 Anthropic Key（可被请求体覆盖）
+- `ANTHROPIC_BASE_URL`：默认的 Anthropic 兼容 Base URL（可被请求体覆盖）
 - `ANTHROPIC_MODEL` / `ANTHROPIC_DEFAULT_SONNET_MODEL`：默认模型（缺省为 `claude-3-5-sonnet-20241022`）
 - `ANTHROPIC_SYSTEM_PROMPT`：兜底系统提示词（请求未传 `systemPrompt`/`options.systemPrompt` 时使用）
 
@@ -229,7 +229,6 @@ AGENT_SDK_API_KEY=replace-with-a-strong-token
 # 默认 Anthropic 兼容配置（可选，调用方可在请求体覆盖）
 ANTHROPIC_BASE_URL=https://api.gbro.site
 ANTHROPIC_AUTH_TOKEN=replace-with-your-key
-ANTHROPIC_API_KEY=replace-with-your-key
 
 # 默认模型（可选）
 ANTHROPIC_DEFAULT_OPUS_MODEL=glm-4.6

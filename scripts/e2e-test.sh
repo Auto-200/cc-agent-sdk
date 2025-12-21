@@ -66,11 +66,12 @@ fi
 
 echo
 echo "[3/4] fetch persisted history"
-http_code="$(
-  curl -sS -D "$history_headers" -o "$history_body" -w "%{http_code}" \
-    "${AUTH_HEADER[@]}" \
-    "$ENDPOINT/agent-sdk/history?conversationId=${CID}&limit=50" || true
-)"
+curl_history_cmd=(curl -sS -D "$history_headers" -o "$history_body" -w "%{http_code}")
+if [[ -n "${AGENT_SDK_API_KEY:-}" ]]; then
+  curl_history_cmd+=(-H "Authorization: Bearer ${AGENT_SDK_API_KEY}")
+fi
+curl_history_cmd+=("$ENDPOINT/agent-sdk/history?conversationId=${CID}&limit=50")
+http_code="$("${curl_history_cmd[@]}" || true)"
 if [[ "$http_code" != "200" ]]; then
   echo "FAIL: history endpoint returned HTTP $http_code"
   head -n 40 "$history_headers" || true
