@@ -11,7 +11,7 @@
     "docker:run": "docker run --rm -p ${AGENT_SDK_PORT:-20001}:20001 cc-agent-sdk"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.1.75"
+    "@anthropic-ai/claude-agent-sdk": "^0.2.121"
   },
   "devDependencies": {
     "@types/bun": "^1.3.5",
